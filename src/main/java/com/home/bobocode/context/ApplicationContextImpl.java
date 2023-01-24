@@ -1,11 +1,14 @@
 package com.home.bobocode.context;
 
+import com.home.bobocode.annotations.Autowired;
 import com.home.bobocode.annotations.Bean;
 import com.home.bobocode.exceptions.InitializeBeanException;
+import com.home.bobocode.exceptions.InjectFieldException;
 import com.home.bobocode.exceptions.NoSuchBeanException;
 import com.home.bobocode.exceptions.NoUniqueBeanException;
 import org.reflections.Reflections;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Map;
@@ -25,16 +28,36 @@ public class ApplicationContextImpl implements ApplicationContext {
     private void init(String path) {
         Reflections reflections = new Reflections(path);
         Set<Class<?>> classes = reflections.getTypesAnnotatedWith(Bean.class);
-        classes.forEach(aClass -> {
-            try {
-                var constructor = aClass.getConstructor();
-                var bean = constructor.newInstance();
-                var beanName = getBeanName(aClass);
-                beans.put(beanName, bean);
-            } catch (InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
-                throw new InitializeBeanException(e.getMessage(), e.getCause());
-            }
+        classes.forEach(this::createBean);
+        injectBeans();
+    }
+
+    private void injectBeans() {
+        beans.values().forEach(obj -> {
+            List<Field> fields = List.of(obj.getClass().getDeclaredFields());
+            fields.forEach(field -> {
+                if (Objects.nonNull(field.getAnnotation(Autowired.class))) {
+                     Object bean = getBean(field.getType());
+                     field.setAccessible(true);
+                    try {
+                        field.set(obj, bean);
+                    } catch (IllegalAccessException e) {
+                        throw new InjectFieldException(e.getMessage(), e.getCause());
+                    }
+                }
+            });
         });
+    }
+
+    private void createBean(Class<?> clazz) {
+        try {
+            var constructor = clazz.getConstructor();
+            var bean = constructor.newInstance();
+            var beanName = getBeanName(clazz);
+            beans.put(beanName, bean);
+        } catch (InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+            throw new InitializeBeanException(e.getMessage(), e.getCause());
+        }
     }
 
     private String getBeanName(Class<?> clazz) {
@@ -43,14 +66,18 @@ public class ApplicationContextImpl implements ApplicationContext {
             return annotationBean.value();
         }
         var simpleName = clazz.getSimpleName();
-        return simpleName.substring(0, 1).toLowerCase() + simpleName.substring(1);
+        return formatBeanName(simpleName);
+    }
+
+    private String formatBeanName(String name) {
+        return name.substring(0, 1).toLowerCase() + name.substring(1);
     }
 
     public <T> T getBean(Class<T> beanType) {
         List<Object> objects = beans.values().stream()
                 .filter(object -> object.getClass().equals(beanType))
                 .collect(Collectors.toList());
-        if (objects.size() == 0) {
+        if (objects.isEmpty()) {
             throw new NoSuchBeanException("Does not exist bean with " + beanType.getSimpleName() + " class");
         }
         if (objects.size() > 1) {
